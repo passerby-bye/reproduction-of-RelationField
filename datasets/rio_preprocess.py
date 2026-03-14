@@ -223,9 +223,23 @@ def get_args():
     args = parser.parse_args()
     return args
 
+def is_sequence_dir(path: Path) -> bool:
+    """Return True when `path` already points at a single sequence folder."""
+    return (
+        path.is_dir()
+        and (path / "labels.ply").exists()
+        and (path / "camera.yaml").exists()
+    )
+
 if __name__ == "__main__":      
     args = get_args()
-    for scene in rio.scenes:
-        data = f'{args.data}/{scene}'
-        output_dir = f'{args.output_dir}/rio_{scene}'
-        process_rio(Path(data), Path(output_dir))
+    data_root = Path(args.data)
+    output_root = Path(args.output_dir)
+
+    if is_sequence_dir(data_root):
+        process_rio(data_root, output_root / data_root.name)
+    else:
+        for scene in rio.scenes:
+            data = data_root / scene
+            output_dir = output_root / f"rio_{scene}"
+            process_rio(data, output_dir)

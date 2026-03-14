@@ -70,6 +70,12 @@ class RelationFieldDataManager(VanillaDataManager):  # pylint: disable=abstract-
         local_rank: int = 0,
         **kwargs,  # pylint: disable=unused-argument
     ):
+        # ns-viewer uses test_mode="test" by default, which triggers full image caching
+        # in the base datamanager and can OOM on low-memory systems. Inference mode
+        # is sufficient for interactive checkpoint viewing.
+        if test_mode == "test":
+            test_mode = "inference"
+
         if os.getenv("NERFACTO_DEPTH"):
             print('---using depth dataset---')
             self.dataset_type = None
@@ -94,9 +100,9 @@ class RelationFieldDataManager(VanillaDataManager):  # pylint: disable=abstract-
         self.group_cdf = None
         self.scale_3d_statistics = None
         
-        images = [self.train_dataset[i]["image"].permute(2, 0, 1)[None, ...] for i in range(len(self.train_dataset))]
-
-        images = torch.cat(images)
+        # Avoid materializing all training images in memory; only image shape is needed.
+        sample_image = self.train_dataset[0]["image"]
+        image_shape = list(sample_image.shape[:2])
         openseg_cache_path = Path(osp.join(cache_dir, "openseg.npy"))
         clip_cache_path = Path(osp.join(cache_dir, "clip.npy"))
         gpt_cache_path = Path(osp.join(cache_dir, "gpt.pkl"))
@@ -119,18 +125,23 @@ class RelationFieldDataManager(VanillaDataManager):  # pylint: disable=abstract-
         self.openseg_dataloader = OpenSegDataloader(
             image_list=image_pathes,
             device=self.device,
-            cfg={"image_shape": list(images.shape[2:4])},
+            cfg={"image_shape": image_shape},
             cache_path=openseg_cache_path,
         )
         
         self.relation_bert_dataloader = GPTDataloader(
             gpt_output_dir=gpt_path,
             device=self.device,
-            cfg={"image_shape": list(images.shape[2:4])},
+            cfg={"image_shape": image_shape},
             cache_path=gpt_cache_path,
         )
         
-        self.jina_none_embd = torch.from_numpy(torch.load('/'.join(cache_dir.split('/')[:-1])+'/jina_none_emb.pt'))
+        jina_none_path = '/'.join(cache_dir.split('/')[:-1]) + '/jina_none_emb.pt'
+        jina_none_embd = torch.load(jina_none_path, weights_only=False)
+        if isinstance(jina_none_embd, np.ndarray):
+            self.jina_none_embd = torch.from_numpy(jina_none_embd)
+        else:
+            self.jina_none_embd = torch.as_tensor(jina_none_embd)
         torch.cuda.empty_cache()
 
     def load_sam_data(self) -> bool:

@@ -8,6 +8,7 @@ import gc
 import os
 import typing
 
+import numpy as np
 import tensorflow as tf2
 import tensorflow.compat.v1 as tf
 import torch
@@ -29,27 +30,38 @@ class OpenSegDataloader(FeatureDataloader):
         super().__init__(cfg, device, image_list, cache_path)
     
     def create(self, image_path_list):
+        # TensorFlow OpenSeg often fails on mixed CUDA/cuDNN setups.
+        # Keep OpenSeg on CPU by default; Torch training still uses GPU.
+        force_cpu = os.environ.get("RELATIONFIELD_OPENSEG_CPU", "1") == "1"
+        if force_cpu:
+            try:
+                tf2.config.set_visible_devices([], "GPU")
+            except Exception:
+                # Device visibility can be immutable after TF runtime init.
+                pass
 
         saved_model_path = 'models/openseg_exported_clip'
         saved_model_path = os.path.realpath(os.path.expanduser(saved_model_path))
         openseg_model = tf2.saved_model.load(saved_model_path, tags=[tf.saved_model.tag_constants.SERVING],)
 
-        openseg_embeds = []
-        for image_id in tqdm(range(len(image_path_list)), desc='openseg', total=len(image_path_list), leave=False):
+        num_images = len(image_path_list)
+        openseg_embeds = None
+        for image_id in tqdm(range(num_images), desc='openseg', total=num_images, leave=False):
             with torch.no_grad():
                 image_path = image_path_list[image_id]
                 h = self.cfg['image_shape'][0] // 4
                 w = self.cfg['image_shape'][1] // 4
                 
                 descriptors = extract_openseg_img_feature(image_path, openseg_model, img_size=[h, w])  # img_size=[240, 320]
-            # descriptors = descriptors.reshape(h, w, -1)
-            descriptors = descriptors.permute(1, 2, 0)
-            openseg_embeds.append(descriptors.cpu().detach())
+            descriptors = descriptors.permute(1, 2, 0).cpu().numpy()
+            if openseg_embeds is None:
+                openseg_embeds = np.empty((num_images, *descriptors.shape), dtype=np.float16)
+            openseg_embeds[image_id] = descriptors.astype(np.float16, copy=False)
 
         del openseg_model
         gc.collect()
         torch.cuda.empty_cache()
-        self.data = torch.stack(openseg_embeds, dim=0)
+        self.data = torch.from_numpy(openseg_embeds)
 
     def __call__(self, img_points):
         # img_points: (B, 3) # (img_ind, x, y)

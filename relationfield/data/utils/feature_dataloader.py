@@ -48,14 +48,18 @@ class FeatureDataloader(ABC):
             print("Config mismatch, using saved config")
             # self.cfg = cfg
             # raise ValueError("Config mismatch")
-        self.data = torch.from_numpy(np.load(self.cache_path)).to(self.device)
+        # Keep full cached features on CPU; move only sampled slices to GPU in __call__.
+        self.data = torch.from_numpy(np.load(self.cache_path))
 
     def save(self):
         os.makedirs(self.cache_path.parent, exist_ok=True)
         cache_info_path = self.cache_path.with_suffix(".info")
         with open(cache_info_path, "w") as f:
             f.write(json.dumps(self.cfg))
-        np.save(self.cache_path, self.data)
+        if torch.is_tensor(self.data):
+            np.save(self.cache_path, self.data.detach().cpu().numpy())
+        else:
+            np.save(self.cache_path, self.data)
 
     def try_load(self, img_list: torch.Tensor):
         try:

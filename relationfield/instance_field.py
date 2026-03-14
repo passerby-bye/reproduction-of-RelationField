@@ -15,7 +15,7 @@ from nerfstudio.configs.base_config import InstantiateConfig
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.field_components.spatial_distortions import SceneContraction
 from nerfstudio.fields.base_field import Field
-from torchtyping import TensorType
+from relationfield.type_aliases import TensorType
 
 try:
     import tinycudann as tcnn

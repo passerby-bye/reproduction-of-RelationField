@@ -35,6 +35,10 @@ class GPTDataloader:
         self.cache_path = cache_path
         self.data = None  # only expect data to be cached, nothing else
         self.try_load(gpt_output_dir)  # don't save image_list, avoid duplicates
+        self.segmentation_map_tensor = torch.from_numpy(self.data["segmentation_map"])
+        self.segmentation_count_tensor = None
+        if "segmentation_map_count" in self.data:
+            self.segmentation_count_tensor = torch.from_numpy(self.data["segmentation_map_count"])
 
     def create(self, gpt_output_dir):
         # load jina model
@@ -111,8 +115,8 @@ class GPTDataloader:
         torch.cuda.empty_cache()
         self.data = {
             "rel_embeds": bert_rel_embeds,
-            "segmentation_map": bert_segmentation_map,
-            "segmentation_map_count": bert_segmentation_count_map,
+            "segmentation_map": np.stack(bert_segmentation_map),
+            "segmentation_map_count": np.stack(bert_segmentation_count_map),
         }
 
     def try_load(self, gpt_output_path: str):
@@ -133,6 +137,11 @@ class GPTDataloader:
             # raise ValueError("Config mismatch")
         with open(self.cache_path.with_suffix(".pkl"), "rb") as f:
             self.data = pickle.load(f)
+        # Backward-compat for old caches stored as python lists.
+        if isinstance(self.data.get("segmentation_map"), list):
+            self.data["segmentation_map"] = np.stack(self.data["segmentation_map"])
+        if isinstance(self.data.get("segmentation_map_count"), list):
+            self.data["segmentation_map_count"] = np.stack(self.data["segmentation_map_count"])
 
     def save(self):
         os.makedirs(self.cache_path.parent, exist_ok=True)
@@ -164,22 +173,18 @@ class GPTDataloader:
 
         outdict = {
             "rel_embeds": [self.data["rel_embeds"][i] for i in batch_idx],
-            "segmentation_map_class": torch.stack(self.data["segmentation_map"])[
+            "segmentation_map_class": self.segmentation_map_tensor[
                 img_points[:, 0].long(), x_ind, y_ind
             ],
-            "segmentation_map_query": torch.stack(self.data["segmentation_map"])[
+            "segmentation_map_query": self.segmentation_map_tensor[
                 query_points[..., 0].long(), query_x_ind, query_y_ind
             ],
         }
-        if "segmentation_map_count" in self.data:
-            outdict["segmentation_count_class"] = torch.from_numpy(
-                np.stack(self.data["segmentation_map_count"])[
-                    img_points[:, 0].long(), x_ind, y_ind
-                ]
-            )
-            outdict["segmentation_count_query"] = torch.from_numpy(
-                np.stack(self.data["segmentation_map_count"])[
-                    query_points[..., 0].long(), query_x_ind, query_y_ind
-                ]
-            )
+        if self.segmentation_count_tensor is not None:
+            outdict["segmentation_count_class"] = self.segmentation_count_tensor[
+                img_points[:, 0].long(), x_ind, y_ind
+            ]
+            outdict["segmentation_count_query"] = self.segmentation_count_tensor[
+                query_points[..., 0].long(), query_x_ind, query_y_ind
+            ]
         return outdict

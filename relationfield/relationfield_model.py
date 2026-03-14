@@ -8,7 +8,6 @@ from typing import Dict, List, Tuple, Type, Literal, Union
 
 from torch.nn import Parameter
 import numpy as np
-from torchtyping import TensorType
 import torch
 import torch.nn.functional as F
 from nerfstudio.cameras.cameras import Cameras
@@ -28,6 +27,7 @@ from relationfield.instance_field import (
 from relationfield.relationfield_renderers import MeanRenderer, FeatureRenderer
 from relationfield.semantic_field import OpenNerfField, OpenNerfFieldHeadNames
 from relationfield.relation_field import RelationField
+from relationfield.type_aliases import TensorType
 
 
 if os.getenv("NERFACTO_DEPTH"):
@@ -339,16 +339,15 @@ class RelationFieldModel(MODEL):
         positions = self.relation_field.spatial_distortion(positions)
         positions = (positions + 2.0) / 4.0
 
-        if query_pos.shape[0] != positions.shape[0]:
-            query_pos = query_pos.repeat(positions.shape[0],1,1)
+        query_pos = self._align_query_positions(query_pos, positions)
 
-        xs = torch.concat([e(query_pos.view(-1, 3)) for e in self.semantic_field.clip_encs],dim=-1)
+        xs = torch.concat([e(query_pos.reshape(-1, 3)) for e in self.semantic_field.clip_encs],dim=-1)
         query_embd = self.semantic_field.openseg_net(xs)
 
-        query_positions = torch.cat([e(query_pos.view(-1, 3)) for e in self.relation_field.encs],dim=-1)
+        query_positions = torch.cat([e(query_pos.reshape(-1, 3)) for e in self.relation_field.encs],dim=-1)
         
         semantic_embd = semantic_embeddings[mask].view(-1,semantic_embeddings.shape[-1])
-        field_positions = torch.concat([e(positions.view(-1, 3)) for e in self.relation_field.encs], dim=-1) 
+        field_positions = torch.concat([e(positions.reshape(-1, 3)) for e in self.relation_field.encs], dim=-1) 
         
         if self.config.relation_semantic_feat:
             relation_pre_embd = torch.cat((
@@ -365,6 +364,31 @@ class RelationFieldModel(MODEL):
         rel_feat = self.relation_field.relation_net(relation_pre_embd)
         return rel_feat.view(*ray_samples[mask].shape, -1)
 
+    def _align_query_positions(self, query_pos: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
+        """Broadcast/repeat query positions to match positions shape [n_rays, n_samples, 3]."""
+        if query_pos.dim() == 2:
+            query_pos = query_pos.unsqueeze(1)
+        if positions.dim() == 2:
+            positions = positions.unsqueeze(1)
+
+        target_rays, target_samples = positions.shape[0], positions.shape[1]
+        q_rays, q_samples = query_pos.shape[0], query_pos.shape[1]
+
+        if q_rays != target_rays:
+            if q_rays == 1:
+                query_pos = query_pos.expand(target_rays, -1, -1)
+            else:
+                query_pos = query_pos[:target_rays]
+
+        if q_samples != target_samples:
+            if q_samples == 1:
+                query_pos = query_pos.expand(-1, target_samples, -1)
+            else:
+                repeats = (target_samples + q_samples - 1) // q_samples
+                query_pos = query_pos.repeat(1, repeats, 1)[:, :target_samples, :]
+
+        return query_pos
+
     def relation_embedding_from_points(self, ray_samples: torch.tensor, query_samples: torch.tensor, mask: torch.Tensor=None) -> torch.Tensor:
         """Calculate the relation embedding between semantic embeddings and query positions."""
         # get semantic embeddings at query positions
@@ -380,13 +404,12 @@ class RelationFieldModel(MODEL):
         positions = self.relation_field.spatial_distortion(positions)
         positions = (positions + 2.0) / 4.0
 
-        if query_pos.shape[0] != positions.shape[0]:
-            query_pos = query_pos.repeat(positions.shape[0],1,1)
+        query_pos = self._align_query_positions(query_pos, positions)
 
 
-        query_positions = torch.cat([e(query_pos.view(-1, 3)) for e in self.relation_field.encs],dim=-1)
+        query_positions = torch.cat([e(query_pos.reshape(-1, 3)) for e in self.relation_field.encs],dim=-1)
         
-        field_positions = torch.concat([e(positions.view(-1, 3)) for e in self.relation_field.encs], dim=-1) 
+        field_positions = torch.concat([e(positions.reshape(-1, 3)) for e in self.relation_field.encs], dim=-1) 
         
         
         relation_pre_embd = torch.cat((
@@ -412,9 +435,11 @@ class RelationFieldModel(MODEL):
         positions = self.relation_field.spatial_distortion(positions)
         positions = (positions + 2.0) / 4.0
 
-        if query_pos.shape[0] != positions.shape[0]:
-            query_pos = query_pos.repeat(positions.shape[0],1,1)
-        xs = torch.cat([e(torch.concat((positions.view(-1,3),query_pos.view(-1, 3)),dim=-1)) for e in self.relation_field.encs],dim=-1)
+        query_pos = self._align_query_positions(query_pos, positions)
+        xs = torch.cat(
+            [e(torch.concat((positions.reshape(-1, 3), query_pos.reshape(-1, 3)), dim=-1)) for e in self.relation_field.encs],
+            dim=-1,
+        )
 
         rel_feat = self.relation_field.relation_net(xs)
         return rel_feat.view(*ray_samples[mask].shape, -1)
@@ -623,30 +648,41 @@ class RelationFieldModel(MODEL):
         num_rays_per_chunk = self.config.eval_num_rays_per_chunk
         image_height, image_width = camera_ray_bundle.origins.shape[:2]
         num_rays = len(camera_ray_bundle)
-        outputs_lists = defaultdict(list)
-        for i in range(0, num_rays, num_rays_per_chunk):
-            start_idx = i
-            end_idx = i + num_rays_per_chunk
-            ray_bundle = camera_ray_bundle.get_row_major_sliced_ray_bundle(start_idx, end_idx)
-            # move the chunk inputs to the model device
-            ray_bundle = ray_bundle.to(self.device)
-            outputs = self.forward(ray_bundle=ray_bundle, batch=None)
-            for output_name, output in outputs.items():  # type: ignore
-                if not isinstance(output, torch.Tensor):
-                    # TODO: handle lists of tensors as well
-                    continue
-                # move the chunk outputs from the model device back to the device of the inputs.
-                outputs_lists[output_name].append(output.to(input_device))
+        min_chunk_size = 256
+        while True:
+            outputs_lists = defaultdict(list)
+            try:
+                for i in range(0, num_rays, num_rays_per_chunk):
+                    start_idx = i
+                    end_idx = i + num_rays_per_chunk
+                    ray_bundle = camera_ray_bundle.get_row_major_sliced_ray_bundle(start_idx, end_idx)
+                    # move the chunk inputs to the model device
+                    ray_bundle = ray_bundle.to(self.device)
+                    outputs = self.forward(ray_bundle=ray_bundle, batch=None)
+                    for output_name, output in outputs.items():  # type: ignore
+                        if not isinstance(output, torch.Tensor):
+                            # TODO: handle lists of tensors as well
+                            continue
+                        # move the chunk outputs from the model device back to the device of the inputs.
+                        outputs_lists[output_name].append(output.to(input_device))
+                break
+            except RuntimeError as err:
+                is_oom = "out of memory" in str(err).lower()
+                if (not is_oom) or num_rays_per_chunk <= min_chunk_size:
+                    raise
+                num_rays_per_chunk = max(min_chunk_size, num_rays_per_chunk // 2)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         outputs = {}
         for output_name, outputs_list in outputs_lists.items():
-            if "field" in output_name:
-                N, S, D = outputs_list[0].shape
-                outputs[output_name] = torch.cat(outputs_list,dim=0).view(image_height, image_width, S, D)
+            cat_output = torch.cat(outputs_list, dim=0)
+            # Keep outputs even when viewer ray bundles are flattened/cropped and
+            # cannot be reshaped back to (H, W, ...). This prevents missing keys
+            # such as "depth" that viewer interaction depends on.
+            if cat_output.shape[0] == image_height * image_width:
+                outputs[output_name] = cat_output.view(image_height, image_width, *cat_output.shape[1:])
             else:
-                try:
-                    outputs[output_name] = torch.cat(outputs_list).view(image_height, image_width, -1)  # type: ignore
-                except:
-                    pass
+                outputs[output_name] = cat_output
         return outputs
     
     
@@ -768,4 +804,3 @@ class RelationFieldModel(MODEL):
                 "relation": rel_feat
         }
     
-

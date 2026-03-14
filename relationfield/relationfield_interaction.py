@@ -343,7 +343,19 @@ class RelationFieldClickScene(nn.Module):
             rel_feat = rel_feat.view(*ray_samples.frustums.shape, -1)
             mask = mask.float()
         else:
-            rel_feat = model.relation_embedding_from_points(ray_samples.frustums.get_positions(), torch.from_numpy(self.selected_relation_position[None]).cuda().repeat(1,24,1),None)
+            n_query_samples = model.config.num_feat_samples
+            query_pos = torch.from_numpy(self.selected_relation_position[None]).cuda().repeat(1, n_query_samples, 1)
+            positions = ray_samples.frustums.get_positions()
+            # Chunk relation inference to reduce peak VRAM in interactive viewer mode.
+            chunk_rays = 256
+            rel_chunks = []
+            for i in range(0, positions.shape[0], chunk_rays):
+                rel_chunks.append(
+                    model.relation_embedding_from_points(
+                        positions[i:i + chunk_rays], query_pos, None
+                    )
+                )
+            rel_feat = torch.cat(rel_chunks, dim=0)
             # rel_feat = model.relation_embedding(ray_samples, semantic_field_outputs, self.selected_relation_samples, None)
             mask = None
         return {
@@ -462,10 +474,10 @@ class RelationFieldClickScene(nn.Module):
             
         if openseg_shape == 3:
             relevancy = relevancy.view(rays, samples)
-            weights = outputs["weights"]
-            # normalize the weights to 0-1 in dim 1
-            weights = weights / weights.max(dim=1, keepdim=True)[0]
-            relevancy = torch.sum(1 * relevancy, dim=-1)
+            relevancy = torch.sum(relevancy, dim=-1)
+
+        if relevancy.dim() == 1:
+            relevancy = relevancy.unsqueeze(-1)
     
         return {
             "relevancy": relevancy
@@ -476,24 +488,39 @@ class RelationFieldClickScene(nn.Module):
             return
         rel_feat = outputs["relation_map"]
         rel_feat = F.normalize(rel_feat, dim=-1)
-        
-        if rel_feat.dim() == 3:
-            rays, samples, emb_dim = rel_feat.shape
-            rel_feat = rel_feat.view(-1, rel_feat.shape[-1])
-            
-        relevancy = self.get_relevancy_bert(rel_feat, 0)
+
+        had_sample_dim = rel_feat.dim() == 3
+        if had_sample_dim:
+            rays, samples, _ = rel_feat.shape
+            rel_feat_flat = rel_feat.view(-1, rel_feat.shape[-1])
+        else:
+            rel_feat_flat = rel_feat.view(-1, rel_feat.shape[-1])
+
+        relevancy = self.get_relevancy_bert(rel_feat_flat, 0)
         if relevancy is not None:
-            relevancy = relevancy[:,0]
-            
-        if rel_feat.dim() == 3:
-            import pdb; pdb.set_trace()
-            relevancy = relevancy.view(rays, samples)
-            weights = outputs["weights"]
-            # normalize the weights to 0-1 in dim 1
-            weights = weights / weights.max(dim=1, keepdim=True)[0]
-            relevancy = torch.sum(weights * relevancy, dim=-1)
-            
-        relevancy_raw = relevancy.clone()
+            relevancy = relevancy[:, 0]
+        else:
+            return None
+
+        render_weights = weights
+        if render_weights is None:
+            render_weights = outputs.get("weights")
+        if render_weights is None:
+            weights_list = outputs.get("weights_list")
+            if isinstance(weights_list, list) and len(weights_list) > 0:
+                render_weights = weights_list[-1]
+        if render_weights is None:
+            return None
+        if render_weights.dim() == 3 and render_weights.shape[-1] == 1:
+            render_weights = render_weights.squeeze(-1)
+
+        if had_sample_dim:
+            relevancy_samples = relevancy.view(rays, samples)
+            norm_weights = render_weights / (render_weights.max(dim=1, keepdim=True)[0] + 1e-6)
+            relevancy_raw = torch.sum(norm_weights * relevancy_samples, dim=-1)
+        else:
+            relevancy_raw = relevancy
+
         # scale relevancy by distance
         scale_by_dist = True
         if scale_by_dist:
@@ -504,8 +531,20 @@ class RelationFieldClickScene(nn.Module):
             
             # distance_scaled = 1/(1+distance)
             distance_scaler = torch.exp(-0.5*distance)
-            relevancy_scaled = relevancy.unsqueeze(1).repeat(1,24).view(-1) * distance_scaler
-            relevancy_scaled = self.model_handle[0].renderer_mean(relevancy_scaled.view(*ray_samples.frustums.shape, -1), weights.detach())
+            n_rays, n_samples = ray_samples.frustums.shape[:2]
+            distance_scaler = distance_scaler.view(n_rays, n_samples)
+            if had_sample_dim:
+                scaled_samples = relevancy_samples * distance_scaler
+            else:
+                scaled_samples = relevancy_raw.unsqueeze(1).repeat(1, n_samples) * distance_scaler
+            relevancy_scaled = self.model_handle[0].renderer_mean(
+                scaled_samples.unsqueeze(-1), render_weights.detach().unsqueeze(-1)
+            ).squeeze(-1)
+
+        if relevancy_raw.dim() == 1:
+            relevancy_raw = relevancy_raw.unsqueeze(-1)
+        if relevancy_scaled.dim() == 1:
+            relevancy_scaled = relevancy_scaled.unsqueeze(-1)
 
         return {
             "relation_relevancy_raw": relevancy_raw,

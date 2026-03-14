@@ -6,3 +6,18 @@ outputs
 models
 datasets
 renders
+
+# large data directories
+Replica/
+replica_output/
+rio_output/
+seq01_02/
+eval_results/
+
+# large files
+openseg_exported_clip.zip
+*.zip
+*.ply
+*.pt
+*.pth
+*.ckpt

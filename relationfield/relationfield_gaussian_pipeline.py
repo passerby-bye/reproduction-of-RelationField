@@ -9,7 +9,6 @@
 import typing
 from dataclasses import dataclass, field
 from typing import Literal, Type, Optional, List, Dict
-from torchtyping import TensorType
 from pathlib import Path
 import trimesh
 import viser
@@ -35,6 +34,7 @@ from sklearn.neighbors import NearestNeighbors
 
 
 from relationfield.relationfield_pipeline import RelationFieldPipeline
+from relationfield.type_aliases import TensorType
 
 
 def generate_random_colors(N=5000) -> torch.Tensor:
