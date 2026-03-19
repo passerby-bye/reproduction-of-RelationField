@@ -1,22 +1,4 @@
-<span align="center">
-<h1> RelationField: Relate Anything in Radiance Fields</h1>
-
-<a href="https://kochsebastian.com">Sebastian Koch</a>,
-<a href="https://scholar.google.com/citations?user=dfjN3YAAAAAJ">Johanna Wald</a>,
-<a href="https://scholar.google.com/citations?user=k4m1c6EAAAAJ">Mirco Colosi</a>,
-<a href="https://scholar.google.com/citations?user=U3KSTwkAAAAJ">Narunas Vaskevicius</a>,
-<a href="https://phermosilla.github.io">Pedro Hermosilla</a>,
-<a href="https://federicotombari.github.io">Federico Tombari</a>,
-<a href="https://scholar.google.com/citations?user=FuY-lbcAAAAJ">Timo Ropinski</a>
-
-<!-- <h3>venue</h3> -->
-
-<a href="https://arxiv.org/abs/2412.13652">Paper</a> |
-<a href="http://relationfield.github.io">Project Page</a>
-
-</span>
-
-![RelationField Teaser](https://relationfield.github.io/static/images/teaser.png)
+# RelationField: Relate Anything in Radiance Fields
 
 ## Installation
 
@@ -73,16 +55,14 @@ cd data
 wget https://cvg-data.inf.ethz.ch/nice-slam/data/Replica.zip
 unzip Replica.zip
 cd ..
-python datasets/replica_preprocess.py --data <root-replica-folder> --output <nerfstudio-output>
+python datasets/replica_preprocess.py --data <root-replica-folder> --output_dir <nerfstudio-output> --max_dataset_size 200
 ```
 
-
-### SCANNET++ Dataset
-
-Follow the ScanNet++ data download [here](https://kaldir.vc.in.tum.de/scannetpp/) to download the entire ScanNet++ dataset or a handful of subscenes and transform it into [nerfstudio](https://docs.nerf.studio) format using these steps:
+Use `--max_dataset_size` to control how many frames are sampled (default: 200). Use `-1` for all frames. Example for reduced-view experiments:
 
 ```
-python datasets/scannetpp_preprocess.py
+python datasets/replica_preprocess.py --data <root-replica-folder> --output_dir <nerfstudio-output-v100> --max_dataset_size 100
+python datasets/replica_preprocess.py --data <root-replica-folder> --output_dir <nerfstudio-output-v50> --max_dataset_size 50
 ```
 
 ### RIO10 Dataset
@@ -90,7 +70,13 @@ python datasets/scannetpp_preprocess.py
 Download the RIO10 dataset from [here](https://github.com/WaldJohannaU/RIO10?tab=readme-ov-file) and transform it into [nerfstudio](https://docs.nerf.studio) format using these steps:
 
 ```
-python datasets/rio_preprocess.py
+python datasets/rio_preprocess.py --data <root-rio-folder> --output_dir <nerfstudio-output>
+```
+
+To process a single sequence (e.g. `seq01_02`):
+
+```
+python datasets/rio_preprocess.py --data <root-rio-folder>/seq01_02 --output_dir <nerfstudio-output>
 ```
 
 ### Preprocess GPT Captions
@@ -156,18 +142,3 @@ pixel_sampler=RelationFieldPixelSamplerConfig(
 
 ```
 
-## Acknowledgement
-Large parts of the code base are inspied and build on top of [OpenNerf](https://github.com/opennerf/opennerf) and [GARField](https://github.com/chungmin99/garfield).
-
-## Citation
-
-If you use this work or find it helpful, please consider citing: (bibtex)
-
-```
-@article{koch2024relationfield,
- author = {Koch, Sebastian and Wald, Johanna and Colosi, Mirco and Vaskevicius, Narunas and Hermosilla, Pedro and Tombari, Federico and Ropinski, Timo}},
- title = {RelationField: Relate Anything in Radiance Fields},
- journal = {arXiv preprint arXiv:2412.13652},
- year = {2024},
-}
-```
