@@ -1,4 +1,43 @@
 # RelationField: Relate Anything in Radiance Fields
+## Modifications from Original Repository
+
+The following changes were made on top of the original [RelationField](https://github.com/boschresearch/RelationField) codebase.
+
+### `datasets/replica_preprocess.py`
+- Added `--max_dataset_size` command-line argument so the number of training frames can be set without editing the source. Default remains 200.
+
+### `datasets/subsample_replica.py` *(new file)*
+- Utility script for subsampling an already-preprocessed scene to fewer frames. Creates a new output directory with symlinks to the original images and a downsampled `transforms.json`. Used to generate reduced-view variants (100 / 50 frames) for the reconstruction-quality ablation experiment.
+
+### `eval_relation_queries.py`
+- **Accuracy metrics**: added `loc_acc` (localization accuracy, whether the heatmap argmax falls inside the GT mask), `iou_top10` (IoU between top-10% activation pixels and GT mask), and `score_ratio` (mean activation inside GT vs outside) computed against GPT-generated segmentation masks.
+- **GT mask loading**: added `load_gt_masks()` which reads per-frame `.npy` mask files and `_tag2class.json` label files produced by the GPT preprocessing step.
+- **Class aliases**: added `CLASS_ALIASES` to handle synonym labels (e.g. `screen`/`monitor`, `sofa`/`couch`) when looking up GT masks.
+- **Per-query frame support**: each query can specify its own render frame (`"frame"` key in `QUERIES`); a `--use_query_frames` flag enables this mode.
+- **Frame cache**: frames are rendered/loaded once and reused across queries that share the same frame index.
+- **Original photo background**: uses the downscaled photo from `images_4/` as the RGB background instead of a NeRF render, saving VRAM and render time.
+- **Predicate embedding fix**: relation queries now embed the short predicate string (e.g. `"attached to"`) rather than the full sentence, matching the format used during training.
+- **Raw relation relevancy**: passes `relation_relevancy_raw` (pre-distance-scaling) through the render pipeline so accuracy metrics are not biased by the spatial distance weighting.
+- **Adaptive heatmap thresholding**: `overlay_heatmap` now chooses the threshold from robust quantiles of the activation distribution separately for object and relation queries.
+- **Refined query set and positions**: `QUERIES` and `POSITIONS` updated with cluster-centroid–calibrated 3D coordinates and cleaner query/predicate pairs.
+- **CSV output extended**: summary CSV now includes `target`, `frame`, `raw_max`, `raw_mean`, `loc_acc`, `iou_top10`, `score_ratio` columns.
+
+### `relationfield/relationfield_model.py`
+- **`relation_embedding_from_points`**: added `relation_semantic_feat` branch — when enabled, OpenSeg semantic embeddings at the query and field positions are concatenated with the positional encodings before the relation MLP, giving the network access to semantic context.
+- **`get_outputs_for_points`**: made `clip_net` access conditional with a `hasattr` guard; falls back to `openseg_net` if `clip_net` is not present, fixing a crash on models trained without a separate CLIP head.
+- **`relation_click_output`**: now also stores `relation_samples` (per-sample embeddings before volume rendering) alongside the already-rendered `relation_map`, enabling sample-level inspection.
+- Minor: replaced `.view()` with `.reshape()` where the input tensor may not be contiguous.
+
+### `relationfield/relationfield_interaction.py`
+- **`get_max_across_relation`**: uses `renderer_mean` (the model's volume-rendering accumulator) instead of a hand-rolled normalized-weight sum, making relation relevancy compositing consistent with the rest of the pipeline; also reads `relation_samples` when available instead of `relation_map`.
+- **`query_position_embedding`**: `clip_net` access is now guarded with `hasattr`; falls back to `openseg_net` for models that expose only OpenSeg features.
+- Minor: `.view()` → `.reshape()` for non-contiguous tensors.
+
+### `extract_scene_graph.py` *(new file)*
+- Standalone script that loads a trained RelationField checkpoint, samples points from the scene mesh, clusters them into object instances via DBSCAN, labels each instance using OpenSeg cosine similarity, predicts pairwise relations via the relation field and Jina embeddings, and saves a scene graph visualization.
+
+## Troubleshooting
+**Note:** RelationField requires ~32GB of memory during training.  If your system has lower computational resources, consider reducing the number of training rays.
 
 ## Installation
 
@@ -156,45 +195,6 @@ python extract_scene_graph.py \
     --out_dir sg_results/seq01_02
 ```
 
-## Modifications from Original Repository
-
-The following changes were made on top of the original [RelationField](https://github.com/boschresearch/RelationField) codebase.
-
-### `datasets/replica_preprocess.py`
-- Added `--max_dataset_size` command-line argument so the number of training frames can be set without editing the source. Default remains 200.
-
-### `datasets/subsample_replica.py` *(new file)*
-- Utility script for subsampling an already-preprocessed scene to fewer frames. Creates a new output directory with symlinks to the original images and a downsampled `transforms.json`. Used to generate reduced-view variants (100 / 50 frames) for the reconstruction-quality ablation experiment.
-
-### `eval_relation_queries.py`
-- **Accuracy metrics**: added `loc_acc` (localization accuracy, whether the heatmap argmax falls inside the GT mask), `iou_top10` (IoU between top-10% activation pixels and GT mask), and `score_ratio` (mean activation inside GT vs outside) computed against GPT-generated segmentation masks.
-- **GT mask loading**: added `load_gt_masks()` which reads per-frame `.npy` mask files and `_tag2class.json` label files produced by the GPT preprocessing step.
-- **Class aliases**: added `CLASS_ALIASES` to handle synonym labels (e.g. `screen`/`monitor`, `sofa`/`couch`) when looking up GT masks.
-- **Per-query frame support**: each query can specify its own render frame (`"frame"` key in `QUERIES`); a `--use_query_frames` flag enables this mode.
-- **Frame cache**: frames are rendered/loaded once and reused across queries that share the same frame index.
-- **Original photo background**: uses the downscaled photo from `images_4/` as the RGB background instead of a NeRF render, saving VRAM and render time.
-- **Predicate embedding fix**: relation queries now embed the short predicate string (e.g. `"attached to"`) rather than the full sentence, matching the format used during training.
-- **Raw relation relevancy**: passes `relation_relevancy_raw` (pre-distance-scaling) through the render pipeline so accuracy metrics are not biased by the spatial distance weighting.
-- **Adaptive heatmap thresholding**: `overlay_heatmap` now chooses the threshold from robust quantiles of the activation distribution separately for object and relation queries.
-- **Refined query set and positions**: `QUERIES` and `POSITIONS` updated with cluster-centroid–calibrated 3D coordinates and cleaner query/predicate pairs.
-- **CSV output extended**: summary CSV now includes `target`, `frame`, `raw_max`, `raw_mean`, `loc_acc`, `iou_top10`, `score_ratio` columns.
-
-### `relationfield/relationfield_model.py`
-- **`relation_embedding_from_points`**: added `relation_semantic_feat` branch — when enabled, OpenSeg semantic embeddings at the query and field positions are concatenated with the positional encodings before the relation MLP, giving the network access to semantic context.
-- **`get_outputs_for_points`**: made `clip_net` access conditional with a `hasattr` guard; falls back to `openseg_net` if `clip_net` is not present, fixing a crash on models trained without a separate CLIP head.
-- **`relation_click_output`**: now also stores `relation_samples` (per-sample embeddings before volume rendering) alongside the already-rendered `relation_map`, enabling sample-level inspection.
-- Minor: replaced `.view()` with `.reshape()` where the input tensor may not be contiguous.
-
-### `relationfield/relationfield_interaction.py`
-- **`get_max_across_relation`**: uses `renderer_mean` (the model's volume-rendering accumulator) instead of a hand-rolled normalized-weight sum, making relation relevancy compositing consistent with the rest of the pipeline; also reads `relation_samples` when available instead of `relation_map`.
-- **`query_position_embedding`**: `clip_net` access is now guarded with `hasattr`; falls back to `openseg_net` for models that expose only OpenSeg features.
-- Minor: `.view()` → `.reshape()` for non-contiguous tensors.
-
-### `extract_scene_graph.py` *(new file)*
-- Standalone script that loads a trained RelationField checkpoint, samples points from the scene mesh, clusters them into object instances via DBSCAN, labels each instance using OpenSeg cosine similarity, predicts pairwise relations via the relation field and Jina embeddings, and saves a scene graph visualization.
-
-## Troubleshooting
-**Note:** RelationField requires ~32GB of memory during training.  If your system has lower computational resources, consider reducing the number of training rays.
 
 In `relationfield/relationfield/relationfield_config.py`, you can adjust the following parameters (lines 42-46):
 
