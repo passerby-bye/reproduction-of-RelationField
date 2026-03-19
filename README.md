@@ -6,7 +6,7 @@ The following changes were made on top of the original [RelationField](https://g
 ### `datasets/replica_preprocess.py`
 - Added `--max_dataset_size` command-line argument so the number of training frames can be set without editing the source. Default remains 200.
 
-### `datasets/subsample_replica.py` *(new file)*
+### `datasets/subsample_replica.py
 - Utility script for subsampling an already-preprocessed scene to fewer frames. Creates a new output directory with symlinks to the original images and a downsampled `transforms.json`. Used to generate reduced-view variants (100 / 50 frames) for the reconstruction-quality ablation experiment.
 
 ### `eval_relation_queries.py`
@@ -33,7 +33,7 @@ The following changes were made on top of the original [RelationField](https://g
 - **`query_position_embedding`**: `clip_net` access is now guarded with `hasattr`; falls back to `openseg_net` for models that expose only OpenSeg features.
 - Minor: `.view()` → `.reshape()` for non-contiguous tensors.
 
-### `extract_scene_graph.py` *(new file)*
+### `extract_scene_graph.py` 
 - Standalone script that loads a trained RelationField checkpoint, samples points from the scene mesh, clusters them into object instances via DBSCAN, labels each instance using OpenSeg cosine similarity, predicts pairwise relations via the relation field and Jina embeddings, and saves a scene graph visualization.
 
 ## Troubleshooting
